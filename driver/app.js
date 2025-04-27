@@ -1,8 +1,7 @@
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import {connectRabbitMQ } from "./service/rabbit.js";
-
+import { connectRabbitMQ } from "./service/rabbit.js";
 
 connectRabbitMQ();
 
@@ -23,8 +22,14 @@ app.use(cookieParser())
 
 // routes import
 
-import userRouter from './routes/user.routes.js'
+import driverRouter from './routes/driver.routes.js'
  
-app.use("/", userRouter)
+app.use("/", driverRouter)
+
+// routes declaration
+
+//app.use("/api/v1/healthcheck", healthcheckRouter)
+ 
+
 
 export {app};

@@ -1,9 +1,13 @@
 import {asyncHandler} from "../utils/asyncHandler.js";
-import mongoose from "mongoose";
+//import mongoose from "mongoose";
 import {ApiError} from "../utils/ApiError.js";
 import {User} from "../models/user.model.js";
 import {ApiResponse} from "../utils/ApiResponse.js";
 import jwt from "jsonwebtoken"
+import {  subscribeToQueue } from "../service/rabbit.js";
+import { EventEmitter } from 'events';
+
+const rideEventEmitter = new EventEmitter();
 
 
 const generateAccessAndRefreshTokens = async(userId) => {
@@ -13,8 +17,8 @@ const generateAccessAndRefreshTokens = async(userId) => {
      const user = await User.findById(userId)
      const accessToken = user.generateAccessToken()
      const refreshToken = user.generateRefreshToken()
-    
-
+     console.log("this is accessToken", accessToken);
+     console.log("this is refreshToken", refreshToken);
       user.refreshToken = refreshToken
       await user.save({validateBeforeSave: false})
 
@@ -27,19 +31,8 @@ const generateAccessAndRefreshTokens = async(userId) => {
 }
 
 const registerUser = asyncHandler( async (req, res) => {
-  // get user details from frontend
-  // validation - not empty
-  // check if user already exists: username, email
-  // check for images, check for avatar
-  // upload them to cloudinary, avatar
-  // create user object - create entry in db
-  // remove password and refresh token field from response
-  // check for user creation
-  // return res
-
-
+ console.log(req.body)
   const {fullname, email, username, password } = req.body
-  //console.log("email: ", email);
 
   if (
       [fullname, email, username, password].some((field) => field?.trim() === "")
@@ -54,33 +47,10 @@ const registerUser = asyncHandler( async (req, res) => {
   if (existedUser) {
       throw new ApiError(409, "User with email or username already exists")
   }
-  //console.log(req.files);
-
-  const avatarLocalPath = req.files?.avatar[0]?.path;
-  //const coverImageLocalPath = req.files?.coverImage[0]?.path;
-
-  let coverImageLocalPath;
-  if (req.files && Array.isArray(req.files.coverImage) && req.files.coverImage.length > 0) {
-      coverImageLocalPath = req.files.coverImage[0].path
-  }
   
-
-  if (!avatarLocalPath) {
-      throw new ApiError(400, "Avatar file is required")
-  }
-
-  const avatar = await uploadOnCloudinary(avatarLocalPath)
-  const coverImage = await uploadOnCloudinary(coverImageLocalPath)
-
-  if (!avatar) {
-      throw new ApiError(400, "Avatar file is required")
-  }
- 
 
   const user = await User.create({
       fullname,
-      avatar: avatar.url,
-      coverImage: coverImage?.url || "",
       email, 
       password,
       username: username.toLowerCase()
@@ -101,13 +71,7 @@ const registerUser = asyncHandler( async (req, res) => {
 })
 
 const loginUser = asyncHandler(async (req, res) =>{
-  // req body -> data
-  // username or email
-  //find the user
-  //password check
-  //access and referesh token
-  //send cookie
-
+  
   const {email, username, password} = req.body
   //console.log(email);
 
@@ -137,8 +101,17 @@ const loginUser = asyncHandler(async (req, res) =>{
 
  const {accessToken, refreshToken} = await generateAccessAndRefreshTokens(user._id)
 
-  const loggedInUser = await User.findById(user._id).select("-password -refreshToken")
-
+ const loggedInUser = await User.findByIdAndUpdate(
+     user._id,
+     {
+         $set: {
+             refreshToken: refreshToken
+         }
+     },
+     {
+         new: true
+     }
+   ).select("-password -refreshToken")
   const options = {
       httpOnly: true,
       secure: true
@@ -189,36 +162,37 @@ const logoutUser = asyncHandler(async(req, res) => {
 })
 
 const refreshAccessToken = asyncHandler(async (req, res) => {
-  const incomingRefreshToken = req.cookies.refreshToken || req.body.refreshToken
-
+ const incomingRefreshToken = req.cookies.refreshToken || req.body.refreshToken
+ 
   if (!incomingRefreshToken) {
       throw new ApiError(401, "unauthorized request")
   }
 
   try {
+    
       const decodedToken = jwt.verify(
           incomingRefreshToken,
           process.env.REFRESH_TOKEN_SECRET
       )
   
       const user = await User.findById(decodedToken?._id)
-  
+     
       if (!user) {
           throw new ApiError(401, "Invalid refresh token")
       }
   
       if (incomingRefreshToken !== user?.refreshToken) {
           throw new ApiError(401, "Refresh token is expired or used")
-          
+         
       }
-  
+
       const options = {
           httpOnly: true,
           secure: true
       }
-  
-      const {accessToken, newRefreshToken} = await generateAccessAndRefreshTokens(user._id)
-  
+   
+      const {accessToken, refreshToken} = await generateAccessAndRefreshTokens(user._id)
+      let newRefreshToken = refreshToken;
       return res
       .status(200)
       .cookie("accessToken", accessToken, options)
@@ -233,7 +207,6 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
   } catch (error) {
       throw new ApiError(401, error?.message || "Invalid refresh token")
   }
-
 })
 
 const changeCurrentUserPassword = asyncHandler( async(req, res) => {
@@ -288,10 +261,28 @@ const updateAccountDetails =  asyncHandler( async(req, res) => {
 
    return res
    .status(200)
-   .json( new ApiResponse(200, userupdate, "Account details updated successfully"))
-
-  
+   .json( new ApiResponse(200, userupdate, "Account details updated successfully"))  
 })
+
+
+const acceptedRide = asyncHandler(async (req, res) => {
+    // Long polling: wait for 'ride-accepted' event
+    rideEventEmitter.once('ride-accepted', (data) => {
+        res.send(data);
+    });
+
+    // Set timeout for long polling (e.g., 30 seconds)
+    setTimeout(() => {
+        res.status(204).send();
+    }, 60000);
+})
+
+
+subscribeToQueue('ride-accepted', async (msg) => {
+    const data = JSON.parse(msg);
+    rideEventEmitter.emit('ride-accepted', data);
+});
+
 
 
 export {
@@ -301,5 +292,6 @@ export {
   refreshAccessToken,
   changeCurrentUserPassword,
   updateAccountDetails,
-  getCurrentUSer
+  getCurrentUSer,
+  acceptedRide
 }
